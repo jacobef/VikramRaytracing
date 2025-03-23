@@ -1,4 +1,3 @@
-#include <_inttypes.h>
 #include <iso646.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -51,9 +50,9 @@ struct vec3 vec_sub(struct vec3 p1, struct vec3 p2) {
     return (struct vec3) {(p2.x - p1.x), (p2.y - p1.y), (p2.z - p1.z)};
 }
 
-struct normal_ray {struct vec3 sphere_point; struct vec3 normal; double t; bool outside_face; bool exists;};
+struct normal_ray {struct vec3 sphere_point; struct vec3 normal; double t; bool outside_face; bool exists; struct vec3 color;};
 
-struct sphere {struct vec3 center; double radius;};
+struct sphere {struct vec3 center; double radius; struct vec3 color;};
 
 struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray) {
     double closest_t = -1.0;
@@ -61,6 +60,7 @@ struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray
     struct vec3 best_normal_return;
     bool best_outside;
     bool exists = false;
+    struct vec3 color;
     // modify to work with sphere
     for (int i = 0; i < length; i++) {
         double t = -1.0;
@@ -99,6 +99,7 @@ struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray
             (y - spheres[i].center.y)/spheres[i].radius,
             (z - spheres[i].center.z)/spheres[i].radius
         };
+
         // if (fabs(1.0 - vec_len(outward_normal)) > 5.0) {
         //     printf("outward_normal is x( %lf ", vec_len(outward_normal));
         // }
@@ -120,9 +121,10 @@ struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray
             best_z = z;
             best_normal_return = normal_return;
             best_outside = outside;
+            color = spheres[i].color;
         }
     }
-    return (struct normal_ray) {{best_x,best_y,best_z},best_normal_return, closest_t, best_outside, exists};
+    return (struct normal_ray) { .sphere_point = {best_x,best_y,best_z}, .normal = best_normal_return, .t = closest_t, .outside_face = best_outside, .exists = exists, .color = color };
 }
 
 struct vec3 back_map(double px, double py) {
@@ -154,15 +156,15 @@ struct vec3 ray_color(struct ray ray, int depth) {
         return (struct vec3) { 0.0, 0.0, 0.0 };
     }
     struct sphere spheres[] = {
-        {.center = {0.0, 5.0, 20.0}, .radius = 10},
-        {.center = {0.0, -1005.0,20.0}, .radius = 1000}
+        {.center = {0.0, 5.0, 20.0}, .radius = 10, .color = {0.1,0.5,0.1}},
+        {.center = {0.0, -1005.0,20.0}, .radius = 1000, .color = {0.1,0.1,0.5}}
     };
     struct normal_ray normal_from_point = intersect_t(spheres, 2, ray);
     if (normal_from_point.exists) {
         struct vec3 center_of_reflection = vec_add(normal_from_point.normal, normal_from_point.sphere_point);
         struct vec3 reflection_offset = vec_add(center_of_reflection, random_sphere_generator());
         struct ray reflected_ray = {normal_from_point.sphere_point, reflection_offset};
-        return vec_mul((struct vec3) { 0.5, 0.5, 0.5 }, ray_color(reflected_ray, depth+1));
+        return vec_mul(normal_from_point.color, ray_color(reflected_ray, depth+1));
     } else {
         // return (struct vec3) { 0.61176470588, 0.76470588235, 0.90196078431 }; // Background color!
         return (struct vec3) { 1.0, 1.0, 1.0 };
