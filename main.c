@@ -7,7 +7,7 @@
 
 #define IMAGE_WIDTH 1920
 #define IMAGE_HEIGHT 1080
-#define SAMPLE_SIZE 10
+#define SAMPLE_SIZE 5
 
 #define VIEWPORT_WIDTH 2.0
 #define VIEWPORT_HEIGHT ((VIEWPORT_WIDTH * IMAGE_HEIGHT)/IMAGE_WIDTH)
@@ -50,9 +50,28 @@ struct vec3 vec_sub(struct vec3 p1, struct vec3 p2) {
     return (struct vec3) {(p2.x - p1.x), (p2.y - p1.y), (p2.z - p1.z)};
 }
 
-struct normal_ray {struct vec3 sphere_point; struct vec3 normal; double t; bool outside_face; bool exists; struct vec3 color;};
+struct Metal {struct vec3 albedo; double fuzz;};
 
-struct sphere {struct vec3 center; double radius; struct vec3 color;};
+struct Diffuse {struct vec3 color;};
+
+union materialUnion {
+    struct Diffuse diffuse;
+    struct Metal metal;
+};
+
+struct material {
+    union materialUnion data;
+    bool isDiffuse;
+};
+
+struct sphere {struct vec3 center; double radius; struct vec3 color; struct material material;};
+
+struct normal_ray {struct vec3 sphere_point; struct vec3 normal; double t; bool outside_face; bool exists; struct material material;};
+
+// Either:
+// - Diffuse, with vec3 color
+// Or:
+// - Metal, with vec3 albedo and double fuzz
 
 struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray) {
     double closest_t = -1.0;
@@ -61,6 +80,7 @@ struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray
     bool best_outside;
     bool exists = false;
     struct vec3 color;
+    struct material material;
     // modify to work with sphere
     for (int i = 0; i < length; i++) {
         double t = -1.0;
@@ -121,10 +141,10 @@ struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray
             best_z = z;
             best_normal_return = normal_return;
             best_outside = outside;
-            color = spheres[i].color;
+            material = spheres[i].material;
         }
     }
-    return (struct normal_ray) { .sphere_point = {best_x,best_y,best_z}, .normal = best_normal_return, .t = closest_t, .outside_face = best_outside, .exists = exists, .color = color };
+    return (struct normal_ray) { .sphere_point = {best_x,best_y,best_z}, .normal = best_normal_return, .t = closest_t, .outside_face = best_outside, .exists = exists, .material = material };
 }
 
 struct vec3 back_map(double px, double py) {
@@ -156,15 +176,32 @@ struct vec3 ray_color(struct ray ray, int depth) {
         return (struct vec3) { 0.0, 0.0, 0.0 };
     }
     struct sphere spheres[] = {
-        {.center = {0.0, 5.0, 20.0}, .radius = 10, .color = {0.1,0.5,0.1}},
-        {.center = {0.0, -1005.0,20.0}, .radius = 1000, .color = {0.1,0.1,0.5}}
+        {.center = {0.0, 5.0, 30.0}, .radius = 10, .material = {.isDiffuse = true, .data.diffuse = {0.2,0.4,0.6}}},
+        {.center = {0.0, -1005.0,20.0}, .radius = 1000, .material = {.isDiffuse = true, .data.diffuse = {0.7,0.7,0.0}}},
+        {.center = {-20.0, 5.0,30.0}, .radius = 10, .material = {.isDiffuse = false, .data.metal = {.albedo = {0.3,0.3,0.3}, .fuzz = 0.5}}},
+        {.center = {20.0, 5.0,30.0}, .radius = 10, .material = {.isDiffuse = false, .data.metal = {.albedo = {0.3,0.3,0.3}, .fuzz = 0.0}}}
     };
-    struct normal_ray normal_from_point = intersect_t(spheres, 2, ray);
+
+     // {.albedo = {0.2,0.2,0.2}, .fuzz = 0.0}}
+    struct normal_ray normal_from_point = intersect_t(spheres, 4, ray);
     if (normal_from_point.exists) {
-        struct vec3 center_of_reflection = vec_add(normal_from_point.normal, normal_from_point.sphere_point);
-        struct vec3 reflection_offset = vec_add(center_of_reflection, random_sphere_generator());
-        struct ray reflected_ray = {normal_from_point.sphere_point, reflection_offset};
-        return vec_mul(normal_from_point.color, ray_color(reflected_ray, depth+1));
+        if (normal_from_point.material.isDiffuse == true) {
+            struct vec3 center_of_reflection = vec_add(normal_from_point.normal, normal_from_point.sphere_point);
+            struct vec3 reflection_offset = vec_add(center_of_reflection, random_sphere_generator());
+            struct ray reflected_ray = {normal_from_point.sphere_point, reflection_offset};
+            return vec_mul(normal_from_point.material.data.diffuse.color, ray_color(reflected_ray, depth+1));
+        } else {
+            struct vec3 v = vec_sub(ray.p2,ray.p1);
+            struct vec3 offset = vec_mul((struct vec3) {normal_from_point.material.data.metal.fuzz,normal_from_point.material.data.metal.fuzz,normal_from_point.material.data.metal.fuzz}, random_sphere_generator());
+            struct vec3 reflected_ray = vec_sub(v, vec_mul((struct vec3) {2.0,2.0,2.0},vec_mul((struct vec3) {vec_dot(v, normal_from_point.normal), vec_dot(v, normal_from_point.normal), vec_dot(v, normal_from_point.normal)}, normal_from_point.normal)));
+            struct vec3 reflected_ray_normalized = vec_div(reflected_ray,(struct vec3) {vec_len(reflected_ray),vec_len(reflected_ray),vec_len(reflected_ray)});
+            if (vec_dot(vec_add(reflected_ray_normalized, offset), normal_from_point.normal) < 0.0) {
+                return (struct vec3) {0.0,0.0,0.0};
+            }
+            struct vec3 albedo = normal_from_point.material.data.metal.albedo;
+            struct vec3 refl_color = ray_color((struct ray) {normal_from_point.sphere_point, vec_add(vec_add(reflected_ray_normalized,offset), normal_from_point.sphere_point)}, depth+1);
+            return vec_mul(albedo, refl_color);
+        }
     } else {
         // return (struct vec3) { 0.61176470588, 0.76470588235, 0.90196078431 }; // Background color!
         return (struct vec3) { 1.0, 1.0, 1.0 };
