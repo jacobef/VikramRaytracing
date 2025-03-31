@@ -32,23 +32,41 @@ struct vec3 vec_mul(struct vec3 v1, struct vec3 v2) {
     return (struct vec3) {v1.x * v2.x, v1.y * v2.y, v1.z * v2.z};
 }
 
+struct vec3 vec_mul_scalar(double scalar, struct vec3 vec) {
+    return (struct vec3) { vec.x*scalar, vec.y*scalar, vec.z*scalar };
+}
+
 struct vec3 vec_div(struct vec3 v1, struct vec3 v2) {
     return (struct vec3) {v1.x / v2.x, v1.y / v2.y, v1.z / v2.z};
+}
+
+struct vec3 vec_div_scalar(struct vec3 vec, double scalar) {
+    return (struct vec3) { vec.x/scalar, vec.y/scalar, vec.z/scalar };
 }
 
 struct vec3 vec_add(struct vec3 v1, struct vec3 v2) {
     return (struct vec3) {v1.x + v2.x, v1.y + v2.y, v1.z + v2.z};
 }
 
+struct vec3 normalize(struct vec3 vec) {
+    return vec_div_scalar(vec, vec_len(vec));
+}
+
 struct ray {struct vec3 p1, p2;};
+
+struct vec3 ray_to_vec(struct ray ray) {
+    return (struct vec3) { ray.p2.x - ray.p1.x, ray.p2.y - ray.p1.y, ray.p2.z - ray.p1.z };
+}
 
 double sq(double x) {
     return x * x;
 }
 
 struct vec3 vec_sub(struct vec3 p1, struct vec3 p2) {
-    return (struct vec3) {(p2.x - p1.x), (p2.y - p1.y), (p2.z - p1.z)};
+    return (struct vec3) {(p1.x - p2.x), (p1.y - p2.y), (p1.z - p2.z)};
 }
+
+struct Dielectric {double refraction_index;};
 
 struct Metal {struct vec3 albedo; double fuzz;};
 
@@ -57,11 +75,18 @@ struct Diffuse {struct vec3 color;};
 union materialUnion {
     struct Diffuse diffuse;
     struct Metal metal;
+    struct Dielectric dielectric;
+};
+
+enum materialTag {
+    DIFFUSE,
+    METAL,
+    DIELECTRIC,
 };
 
 struct material {
     union materialUnion data;
-    bool isDiffuse;
+    enum materialTag tag;
 };
 
 struct sphere {struct vec3 center; double radius; struct vec3 color; struct material material;};
@@ -72,6 +97,24 @@ struct normal_ray {struct vec3 sphere_point; struct vec3 normal; double t; bool 
 // - Diffuse, with vec3 color
 // Or:
 // - Metal, with vec3 albedo and double fuzz
+
+struct vec3 refract(struct vec3 ray_in, struct vec3 normal, double etai_over_etat) {
+    double cos_theta = fmin(vec_dot(vec_mul_scalar(-1.0,ray_in), normal), 1.0);
+    struct vec3 r_out_perp = vec_mul_scalar(etai_over_etat, vec_add(ray_in, vec_mul_scalar(cos_theta, normal)));
+    struct vec3 r_out_parallel = vec_mul_scalar(-1.0, vec_mul_scalar(sqrt(fabs(1.0 - sq(vec_len(r_out_perp)))), normal));
+    return vec_add(r_out_perp, r_out_parallel);
+}
+
+struct vec3 reflect(struct vec3 ray_in, struct vec3 normal) {
+    return vec_sub(ray_in, vec_mul_scalar(2.0, vec_mul_scalar(vec_dot(ray_in, normal), normal)));
+}
+
+double reflectance(double cosine, double refraction_index) {
+    double r0 = (1 - refraction_index) / (1 + refraction_index);
+    r0 = r0 * r0;
+    return r0 + (1-r0) * pow((1-cosine), 5);
+}
+
 
 struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray) {
     double closest_t = -1.0;
@@ -124,7 +167,7 @@ struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray
         //     printf("outward_normal is x( %lf ", vec_len(outward_normal));
         // }
         struct vec3 normal_return;
-        double vec_check = vec_dot(vec_sub(ray.p2,ray.p1), outward_normal);
+        double vec_check = vec_dot(vec_sub(ray.p1,ray.p2), outward_normal);
         bool outside;
         if (vec_check >= 0.0) { // outside
             normal_return = outward_normal;
@@ -149,7 +192,9 @@ struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray
 
 struct vec3 back_map(double px, double py) {
     // assume viewport centered at origin and in xy plane
-    return (struct vec3) {-1.0 * ((px/(double)IMAGE_WIDTH * (double) VIEWPORT_WIDTH) - VIEWPORT_WIDTH/2.0),-1.0 * ((py/(double) IMAGE_HEIGHT * (double) VIEWPORT_HEIGHT) - VIEWPORT_HEIGHT/2.0), 0.0};
+    return (struct vec3) {-1.0 * ((px/(double)IMAGE_WIDTH * (double) VIEWPORT_WIDTH) - VIEWPORT_WIDTH/2.0),
+        -1.0 * ((py/(double) IMAGE_HEIGHT * (double) VIEWPORT_HEIGHT) - VIEWPORT_HEIGHT/2.0),
+        0.5};
 }
 
 
@@ -176,48 +221,85 @@ struct vec3 ray_color(struct ray ray, int depth) {
         return (struct vec3) { 0.0, 0.0, 0.0 };
     }
     struct sphere spheres[] = {
-        {.center = {0.0, 5.0, 30.0}, .radius = 10, .material = {.isDiffuse = true, .data.diffuse = {0.2,0.4,0.6}}},
-        {.center = {0.0, -1005.0,20.0}, .radius = 1000, .material = {.isDiffuse = true, .data.diffuse = {0.7,0.7,0.0}}},
-        {.center = {-20.0, 5.0,30.0}, .radius = 10, .material = {.isDiffuse = false, .data.metal = {.albedo = {0.3,0.3,0.3}, .fuzz = 0.5}}},
-        {.center = {20.0, 5.0,30.0}, .radius = 10, .material = {.isDiffuse = false, .data.metal = {.albedo = {0.3,0.3,0.3}, .fuzz = 0.0}}}
+        {.center = {0.0, -100.5, -1.0}, .radius = 100.0, .material = {.tag = DIFFUSE, .data.diffuse = {0.8,0.8,0.0}}}, //moved by 5
+        {.center = {0.0, 0.0,-1.2}, .radius = 0.5, .material = {.tag = DIFFUSE, .data.diffuse = {0.1, 0.2, 0.5}}},
+        {.center = {-1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = DIELECTRIC, .data.dielectric = {.refraction_index = 1.5}}},
+        {.center = {1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = METAL, .data.metal = {.albedo = {0.8,0.6,0.2}, .fuzz = 1.0}}},
+        {.center = {-1.0, 0.0, -1.0}, .radius = 0.4, .material = {.tag = DIELECTRIC, .data.dielectric = {.refraction_index = 1.0 / 1.5}}},
     };
 
      // {.albedo = {0.2,0.2,0.2}, .fuzz = 0.0}}
     struct normal_ray normal_from_point = intersect_t(spheres, 4, ray);
     if (normal_from_point.exists) {
-        if (normal_from_point.material.isDiffuse == true) {
+        if (normal_from_point.material.tag == DIFFUSE) {
             struct vec3 center_of_reflection = vec_add(normal_from_point.normal, normal_from_point.sphere_point);
             struct vec3 reflection_offset = vec_add(center_of_reflection, random_sphere_generator());
             struct ray reflected_ray = {normal_from_point.sphere_point, reflection_offset};
             return vec_mul(normal_from_point.material.data.diffuse.color, ray_color(reflected_ray, depth+1));
-        } else {
-            struct vec3 v = vec_sub(ray.p2,ray.p1);
-            struct vec3 offset = vec_mul((struct vec3) {normal_from_point.material.data.metal.fuzz,normal_from_point.material.data.metal.fuzz,normal_from_point.material.data.metal.fuzz}, random_sphere_generator());
-            struct vec3 reflected_ray = vec_sub(v, vec_mul((struct vec3) {2.0,2.0,2.0},vec_mul((struct vec3) {vec_dot(v, normal_from_point.normal), vec_dot(v, normal_from_point.normal), vec_dot(v, normal_from_point.normal)}, normal_from_point.normal)));
-            struct vec3 reflected_ray_normalized = vec_div(reflected_ray,(struct vec3) {vec_len(reflected_ray),vec_len(reflected_ray),vec_len(reflected_ray)});
-            if (vec_dot(vec_add(reflected_ray_normalized, offset), normal_from_point.normal) < 0.0) {
+        } else if (normal_from_point.material.tag == METAL) {
+            struct vec3 reflected_ray = vec_add(
+                normalize(
+                    reflect(ray_to_vec(ray), normal_from_point.normal)
+                ),
+                vec_mul_scalar(normal_from_point.material.data.metal.fuzz, random_sphere_generator())
+            );
+
+            if (vec_dot(reflected_ray, normal_from_point.normal) < 0.0) {
                 return (struct vec3) {0.0,0.0,0.0};
             }
-            struct vec3 albedo = normal_from_point.material.data.metal.albedo;
-            struct vec3 refl_color = ray_color((struct ray) {normal_from_point.sphere_point, vec_add(vec_add(reflected_ray_normalized,offset), normal_from_point.sphere_point)}, depth+1);
-            return vec_mul(albedo, refl_color);
+            struct vec3 refl_color = ray_color(
+                (struct ray) {
+                    normal_from_point.sphere_point,
+                    vec_add(reflected_ray, normal_from_point.sphere_point)
+                },
+                depth+1
+            );
+            return vec_mul(normal_from_point.material.data.metal.albedo, refl_color);
+        } else if (normal_from_point.material.tag == DIELECTRIC) {
+            double index;
+            if (normal_from_point.outside_face) {
+                index = 1.0/normal_from_point.material.data.dielectric.refraction_index;
+            } else {
+                index = normal_from_point.material.data.dielectric.refraction_index;
+            }
+            struct vec3 unit_direction = normalize(ray_to_vec(ray));
+            double cos_theta = fmin(vec_dot(vec_mul_scalar(-1.0, unit_direction), normal_from_point.normal), 1.0);
+            double sin_theta = sqrt(1.0 - cos_theta*cos_theta);
+
+            struct vec3 refract_direction;
+            if (index * sin_theta > 1.0 || reflectance(cos_theta, index) > ((double) rand()/RAND_MAX)) {
+                refract_direction = reflect(unit_direction, normal_from_point.normal);
+            } else {
+                refract_direction = refract(unit_direction,normal_from_point.normal,index);
+            }
+            struct ray out_ray = {
+                normal_from_point.sphere_point,
+                vec_add(normal_from_point.sphere_point, refract_direction)
+            };
+            return ray_color(out_ray, depth+1);
+        } else {
+            fprintf(stderr, ":(");
+            exit(1);
         }
     } else {
-        // return (struct vec3) { 0.61176470588, 0.76470588235, 0.90196078431 }; // Background color!
-        return (struct vec3) { 1.0, 1.0, 1.0 };
+        return (struct vec3) { 0.61176470588, 0.76470588235, 0.90196078431 }; // Background color!
+        // return (struct vec3) { 0.8, 0.8, 1.0 };
     }
 }
+
 
 struct vec3 pixel_color(int px, int py, int sample_size) { //make use sample sizes
     // (30, 50) (29.5..30.5, 49.5..50.5)
     // randomize px and py
     // rand() = random int between 0 and rand_max
     // (rand()/RAND_MAX)-0.5
-    struct vec3 focal_point = {0.0,0.0,1.0};
+    struct vec3 focal_point = {0.0,0.0, 0.0};
     struct vec3 sum = {0.0,0.0,0.0};
     for (int i = 0; i < sample_size; i++) {
         double anti_aliasing_offset = ((double) rand()/RAND_MAX) - 0.5;
-        sum = vec_add(sum, ray_color((struct ray){back_map(px + anti_aliasing_offset, py + anti_aliasing_offset), focal_point}, 0));
+        struct vec3 viewport_location = back_map(px + anti_aliasing_offset, py + anti_aliasing_offset);
+        struct ray ray = {focal_point, vec_add(focal_point, vec_sub(focal_point, viewport_location))};
+        sum = vec_add(sum, ray_color(ray, 0));
     }
     return vec_div(sum,(struct vec3) {(double) sample_size,(double) sample_size,(double) sample_size});
 }
