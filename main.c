@@ -7,7 +7,7 @@
 
 #define IMAGE_WIDTH 1920
 #define IMAGE_HEIGHT 1080
-#define SAMPLE_SIZE 5
+#define SAMPLE_SIZE 100
 
 #define VIEWPORT_WIDTH 2.0
 #define VIEWPORT_HEIGHT ((VIEWPORT_WIDTH * IMAGE_HEIGHT)/IMAGE_WIDTH)
@@ -190,11 +190,18 @@ struct normal_ray intersect_t(struct sphere *spheres, int length, struct ray ray
     return (struct normal_ray) { .sphere_point = {best_x,best_y,best_z}, .normal = best_normal_return, .t = closest_t, .outside_face = best_outside, .exists = exists, .material = material };
 }
 
-struct vec3 back_map(double px, double py) {
+struct vec3 back_map(double px, double py, struct vec3 pos, struct vec3 up, struct vec3 right) {
     // assume viewport centered at origin and in xy plane
-    return (struct vec3) {-1.0 * ((px/(double)IMAGE_WIDTH * (double) VIEWPORT_WIDTH) - VIEWPORT_WIDTH/2.0),
-        -1.0 * ((py/(double) IMAGE_HEIGHT * (double) VIEWPORT_HEIGHT) - VIEWPORT_HEIGHT/2.0),
-        0.5};
+    // start at the origin
+    double x = -1.0 * ((px/(double)IMAGE_WIDTH * (double) VIEWPORT_WIDTH) - VIEWPORT_WIDTH/2.0);
+    double y = -1.0 * ((py/(double) IMAGE_HEIGHT * (double) VIEWPORT_HEIGHT) - VIEWPORT_HEIGHT/2.0);
+    double z = 0.0;
+    struct vec3 right_thingy = vec_mul_scalar(x, right);
+    struct vec3 up_thingy = vec_mul_scalar(y, up);
+    return vec_add(
+        pos,
+        vec_add(right_thingy, up_thingy)
+    ); //vec add scalar {0.0,0.0,z}
 }
 
 
@@ -217,19 +224,19 @@ struct vec3 random_sphere_generator() { // TODO: optimize
 }
 
 struct vec3 ray_color(struct ray ray, int depth) {
-    if (depth > 10) {
+    if (depth > 50) {
         return (struct vec3) { 0.0, 0.0, 0.0 };
     }
     struct sphere spheres[] = {
         {.center = {0.0, -100.5, -1.0}, .radius = 100.0, .material = {.tag = DIFFUSE, .data.diffuse = {0.8,0.8,0.0}}}, //moved by 5
         {.center = {0.0, 0.0,-1.2}, .radius = 0.5, .material = {.tag = DIFFUSE, .data.diffuse = {0.1, 0.2, 0.5}}},
         {.center = {-1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = DIELECTRIC, .data.dielectric = {.refraction_index = 1.5}}},
-        {.center = {1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = METAL, .data.metal = {.albedo = {0.8,0.6,0.2}, .fuzz = 1.0}}},
         {.center = {-1.0, 0.0, -1.0}, .radius = 0.4, .material = {.tag = DIELECTRIC, .data.dielectric = {.refraction_index = 1.0 / 1.5}}},
+        {.center = {1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = METAL, .data.metal = {.albedo = {0.8,0.6,0.2}, .fuzz = 1.0}}}
     };
 
      // {.albedo = {0.2,0.2,0.2}, .fuzz = 0.0}}
-    struct normal_ray normal_from_point = intersect_t(spheres, 4, ray);
+    struct normal_ray normal_from_point = intersect_t(spheres, sizeof(spheres)/sizeof(struct sphere), ray);
     if (normal_from_point.exists) {
         if (normal_from_point.material.tag == DIFFUSE) {
             struct vec3 center_of_reflection = vec_add(normal_from_point.normal, normal_from_point.sphere_point);
@@ -293,11 +300,21 @@ struct vec3 pixel_color(int px, int py, int sample_size) { //make use sample siz
     // randomize px and py
     // rand() = random int between 0 and rand_max
     // (rand()/RAND_MAX)-0.5
-    struct vec3 focal_point = {0.0,0.0, 0.0};
+    //
+    double camera_x = 0.0;
+    double camera_y = 1.5;
+    double camera_z = -1.0;
+    double focal_distance = 0.5;
+    struct vec3 focal_point = {camera_x, camera_y, camera_z};
     struct vec3 sum = {0.0,0.0,0.0};
+    struct vec3 back_map_pos = {camera_x, camera_y + focal_distance, camera_z};
     for (int i = 0; i < sample_size; i++) {
         double anti_aliasing_offset = ((double) rand()/RAND_MAX) - 0.5;
-        struct vec3 viewport_location = back_map(px + anti_aliasing_offset, py + anti_aliasing_offset);
+        struct vec3 viewport_location = back_map(px + anti_aliasing_offset, py + anti_aliasing_offset,
+            back_map_pos,
+            (struct vec3) { 0.0, 0.0, 1.0 },
+            (struct vec3) { 1.0, 0.0, 0.0 }
+        );
         struct ray ray = {focal_point, vec_add(focal_point, vec_sub(focal_point, viewport_location))};
         sum = vec_add(sum, ray_color(ray, 0));
     }
