@@ -5,9 +5,9 @@
 #include <stdnoreturn.h>
 #include <tgmath.h>
 
-#define IMAGE_WIDTH 1920
-#define IMAGE_HEIGHT 1080
-#define SAMPLE_SIZE 100
+#define IMAGE_WIDTH 2560
+#define IMAGE_HEIGHT 1440
+#define SAMPLE_SIZE 500
 
 #define VIEWPORT_WIDTH 2.0
 #define VIEWPORT_HEIGHT ((VIEWPORT_WIDTH * IMAGE_HEIGHT)/IMAGE_WIDTH)
@@ -26,6 +26,10 @@ double vec_len(struct vec3 p1) {
 
 double vec_dot(struct vec3 v1, struct vec3 v2) {
     return v1.x * v2.x + v1.y * v2.y + v1.z * v2.z;
+}
+
+struct vec3 vec_cross(struct vec3 p1, struct vec3 p2) {
+    return (struct vec3) {p1.y * p2.z - p1.z * p2.y, p1.z * p2.x - p1.x * p2.z, p1.x * p2.y - p1.y * p2.x};
 }
 
 struct vec3 vec_mul(struct vec3 v1, struct vec3 v2) {
@@ -217,32 +221,61 @@ struct vec3 random_sphere_generator() { // TODO: optimize
         double offset_z =  (double)rand()/(RAND_MAX/2) - 1;
         struct vec3 offset = {offset_x, offset_y, offset_z};
         double len = vec_len(offset);
-        if (len < 1) {
+        if (len < 1.0) {
             return vec_div(offset,(struct vec3) {len,len,len});
         }
     }
 }
 
-struct vec3 ray_color(struct ray ray, int depth) {
+struct vec3 random_disk_generator(double radius, struct vec3 right, struct vec3 up, struct vec3 disk_center) { // TODO: optimize
+    while (true) {
+        double offset_x = (double)rand()/(RAND_MAX/2) - 1;
+        double offset_y = (double)rand()/(RAND_MAX/2) - 1;
+        //double offset_z =  (double)rand()/(RAND_MAX/2) - 1;
+        struct vec3 offset = {offset_x, offset_y, 0.0};
+        double len = vec_len(offset);
+        if (len < 1.0) {
+            struct vec3 norm_offset = normalize(offset);
+            return vec_add(
+                disk_center,
+                vec_add(
+                    vec_mul_scalar(radius, vec_mul_scalar(norm_offset.x, right)),
+                    vec_mul_scalar(radius, vec_mul_scalar(norm_offset.y, up))
+                )
+            );
+        }
+    }
+}
+
+/*
+
+
+vec_add(disk_center, vec_mul_scalar(up, offset.y))
+
+*/
+
+
+struct vec3 ray_color(struct ray ray, int depth, struct sphere *spheres, int n_spheres) {
     if (depth > 50) {
         return (struct vec3) { 0.0, 0.0, 0.0 };
     }
-    struct sphere spheres[] = {
-        {.center = {0.0, -100.5, -1.0}, .radius = 100.0, .material = {.tag = DIFFUSE, .data.diffuse = {0.8,0.8,0.0}}}, //moved by 5
-        {.center = {0.0, 0.0,-1.2}, .radius = 0.5, .material = {.tag = DIFFUSE, .data.diffuse = {0.1, 0.2, 0.5}}},
-        {.center = {-1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = DIELECTRIC, .data.dielectric = {.refraction_index = 1.5}}},
-        {.center = {-1.0, 0.0, -1.0}, .radius = 0.4, .material = {.tag = DIELECTRIC, .data.dielectric = {.refraction_index = 1.0 / 1.5}}},
-        {.center = {1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = METAL, .data.metal = {.albedo = {0.8,0.6,0.2}, .fuzz = 1.0}}}
-    };
+
+    // struct sphere spheres[] = {
+    //     {.center = {0.0, -100.5, -1.0}, .radius = 100.0, .material = {.tag = DIFFUSE, .data.diffuse = {0.8,0.8,0.0}}},
+    //     {.center = {0.0, 0.0,-1.2}, .radius = 0.5, .material = {.tag = DIFFUSE, .data.diffuse = {0.1, 0.2, 0.5}}},
+    //     {.center = {-1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = DIELECTRIC, .data.dielectric = {.refraction_index = 1.5}}},
+    //     {.center = {-1.0, 0.0, -1.0}, .radius = 0.4, .material = {.tag = DIELECTRIC, .data.dielectric = {.refraction_index = 1.0 / 1.5}}},
+    //     {.center = {1.0, 0.0, -1.0}, .radius = 0.5, .material = {.tag = METAL, .data.metal = {.albedo = {0.8,0.6,0.2}, .fuzz = 1.0}}}
+    // };
 
      // {.albedo = {0.2,0.2,0.2}, .fuzz = 0.0}}
-    struct normal_ray normal_from_point = intersect_t(spheres, sizeof(spheres)/sizeof(struct sphere), ray);
+    struct normal_ray normal_from_point = intersect_t(spheres, n_spheres, ray);
     if (normal_from_point.exists) {
         if (normal_from_point.material.tag == DIFFUSE) {
             struct vec3 center_of_reflection = vec_add(normal_from_point.normal, normal_from_point.sphere_point);
             struct vec3 reflection_offset = vec_add(center_of_reflection, random_sphere_generator());
             struct ray reflected_ray = {normal_from_point.sphere_point, reflection_offset};
-            return vec_mul(normal_from_point.material.data.diffuse.color, ray_color(reflected_ray, depth+1));
+            return vec_mul(normal_from_point.material.data.diffuse.color, ray_color(reflected_ray, depth+1, spheres, n_spheres));
         } else if (normal_from_point.material.tag == METAL) {
             struct vec3 reflected_ray = vec_add(
                 normalize(
@@ -259,7 +292,8 @@ struct vec3 ray_color(struct ray ray, int depth) {
                     normal_from_point.sphere_point,
                     vec_add(reflected_ray, normal_from_point.sphere_point)
                 },
-                depth+1
+                depth+1,
+                spheres, n_spheres
             );
             return vec_mul(normal_from_point.material.data.metal.albedo, refl_color);
         } else if (normal_from_point.material.tag == DIELECTRIC) {
@@ -283,7 +317,7 @@ struct vec3 ray_color(struct ray ray, int depth) {
                 normal_from_point.sphere_point,
                 vec_add(normal_from_point.sphere_point, refract_direction)
             };
-            return ray_color(out_ray, depth+1);
+            return ray_color(out_ray, depth+1, spheres, n_spheres);
         } else {
             fprintf(stderr, ":(");
             exit(1);
@@ -295,33 +329,75 @@ struct vec3 ray_color(struct ray ray, int depth) {
 }
 
 
-struct vec3 pixel_color(int px, int py, int sample_size) { //make use sample sizes
+struct vec3 pixel_color(int px, int py, int sample_size, struct sphere *spheres, int n_spheres) { //make use sample sizes
     // (30, 50) (29.5..30.5, 49.5..50.5)
     // randomize px and py
     // rand() = random int between 0 and rand_max
     // (rand()/RAND_MAX)-0.5
     //
-    double camera_x = 0.0;
-    double camera_y = 1.5;
-    double camera_z = -1.0;
-    double focal_distance = 0.5;
-    struct vec3 focal_point = {camera_x, camera_y, camera_z};
+    struct vec3 look_from = {13.0, 2.0, 3.0};
+    struct vec3 look_at = { 0.0, 0.0, 0.0};
+    struct vec3 up = { 0.0, 1.0, 0.0 };
+    double focal_length = 2.0; // TODO: Implement FOV instead of focal length
+    double disk_radius = 0.001;
+
+    struct vec3 forward = normalize(vec_sub(look_at, look_from));
+    struct vec3 right = vec_cross(forward, up);
+    struct vec3 disk_center = look_from;
     struct vec3 sum = {0.0,0.0,0.0};
-    struct vec3 back_map_pos = {camera_x, camera_y + focal_distance, camera_z};
+    struct vec3 back_map_pos = vec_sub(disk_center, vec_mul_scalar(focal_length, forward));
     for (int i = 0; i < sample_size; i++) {
         double anti_aliasing_offset = ((double) rand()/RAND_MAX) - 0.5;
         struct vec3 viewport_location = back_map(px + anti_aliasing_offset, py + anti_aliasing_offset,
             back_map_pos,
-            (struct vec3) { 0.0, 0.0, 1.0 },
-            (struct vec3) { 1.0, 0.0, 0.0 }
+            up,
+            right
         );
-        struct ray ray = {focal_point, vec_add(focal_point, vec_sub(focal_point, viewport_location))};
-        sum = vec_add(sum, ray_color(ray, 0));
+        struct vec3 new_disk_focal = random_disk_generator(disk_radius, right, up, disk_center);
+        struct ray ray = {new_disk_focal, vec_add(new_disk_focal, vec_sub(new_disk_focal, viewport_location))};
+        sum = vec_add(sum, ray_color(ray, 0, spheres, n_spheres));
     }
     return vec_div(sum,(struct vec3) {(double) sample_size,(double) sample_size,(double) sample_size});
 }
 
 int main(void) {
+    struct sphere spheres[488];
+    struct material ground_material = { .tag = DIFFUSE, .data.diffuse = { .color = {0.5, 0.5, 0.5} } };
+    spheres[0] = (struct sphere) { .center = {0.0, -1000.0, 0.0}, .radius = 1000.0, .material = ground_material };
+    int index = 1;
+    for (int i = -11; i < 11; i++) {
+        for (int g = -11; g < 11; g++) {
+            double choose_mat = (double) rand()/RAND_MAX;
+            struct vec3 center = {i + 0.9* ((double) rand()/RAND_MAX), 0.2, g + 0.9* ((double) rand()/RAND_MAX)};
+
+            if (vec_len(vec_sub(center, (struct vec3) {4.0,0.2,0.0}))  > 0.9) {
+                if (choose_mat < 0.8) {
+                    // diffuse
+                    struct vec3 color = {(double) rand()/RAND_MAX,(double) rand()/RAND_MAX,(double) rand()/RAND_MAX};
+                    spheres[index] = (struct sphere) { .center = center, .radius = 0.2, .material = { .tag = DIFFUSE, .data.diffuse = { .color = color}}};
+                } else if (choose_mat < 0.95) {
+                    // metal
+                    struct vec3 albedo = vec_add((struct vec3) {0.5,0.5,0.5}, vec_div_scalar((struct vec3){(double) rand()/RAND_MAX,(double) rand()/RAND_MAX,(double) rand()/RAND_MAX}, 2.0));
+                    double fuzz = ((double) rand()/RAND_MAX)/2.0;
+                    spheres[index] = (struct sphere) { .center = center, .radius = 0.2, .material = { .tag = METAL, .data.metal = { .albedo = albedo, .fuzz = fuzz}}};
+                } else {
+                    //glass
+                    spheres[index] = (struct sphere) { .center = center, .radius = 0.2, .material = { .tag = DIELECTRIC, .data.dielectric = { .refraction_index = 1.5}}};
+                }
+            }
+            index++;
+        }
+    }
+    spheres[485] = (struct sphere) { .center = {0.0, 1.0, 0.0}, .radius = 1.0,
+        .material = { .tag = DIELECTRIC, .data.dielectric = { .refraction_index = 1.5 }}
+    };
+    spheres[486] = (struct sphere) { .center = {-4.0, 1.0, 0.0}, .radius = 1.0,
+        .material = { .tag = DIFFUSE, .data.diffuse = { .color = {0.4, 0.2, 0.1} }}
+    };
+    spheres[487] = (struct sphere) { .center = {4.0, 1.0, 0.0}, .radius = 1.0,
+        .material = { .tag = METAL, .data.metal = { .albedo = {0.7, 0.6, 0.5}, .fuzz = 0.0 } }
+    };
+
     FILE *fptr = fopen("blah.ppm", "w");
     if (!fptr) {
         perror("Failed to open file");
@@ -331,8 +407,9 @@ int main(void) {
     fprintf(fptr, "P3\n%d %d\n255\n", IMAGE_WIDTH, IMAGE_HEIGHT);
     // Generate the gradient
     for (int py = IMAGE_HEIGHT-1; py >= 0; py--) {  // Iterate over height first
+        printf("%lf%%\n", 100.0 - (100.0*(double)py/(double)IMAGE_HEIGHT));
         for (int px = 0; px < IMAGE_WIDTH; px++) {  // Iterate over width
-            struct vec3 color = pixel_color(px, py, SAMPLE_SIZE);
+            struct vec3 color = pixel_color(px, py, SAMPLE_SIZE, spheres, sizeof(spheres) / sizeof(struct sphere));
             fprintf(fptr, "%d %d %d ", (int)(sqrt(color.x)*255.0), (int)(sqrt(color.y)*255.0), (int)(sqrt(color.z)*255.0));
         }
         fprintf(fptr, "\n"); // Ensure each row starts on a new line
