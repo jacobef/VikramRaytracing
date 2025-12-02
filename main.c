@@ -4,15 +4,18 @@
 #include <stdlib.h>
 #include <stdnoreturn.h>
 #include <tgmath.h>
+#include <time.h>
+#include <assert.h>
 
 #define IMAGE_WIDTH 800
 #define IMAGE_HEIGHT 600
-#define SAMPLE_SIZE 10
+#define SAMPLE_SIZE 5
 
 #define VIEWPORT_WIDTH 2.0
 #define VIEWPORT_HEIGHT ((VIEWPORT_WIDTH * IMAGE_HEIGHT)/IMAGE_WIDTH)
 
 #define cahr char
+#define NIL NULL
 
 double rand_double(double low, double high) {
     double zero_to_one = (double)rand() / (double)RAND_MAX;
@@ -27,7 +30,15 @@ typedef struct Dielectric {double refraction_index;} Dielectric;
 
 typedef struct Metal {vec3 albedo; double fuzz;} Metal;
 
-typedef struct Diffuse {vec3 color;} Diffuse;
+typedef struct Diffuse {struct texture *tex;} Diffuse;
+
+typedef struct Solid {vec3 color;} Solid;
+
+typedef struct Checker {
+    double inv_scale;
+    struct texture *even_texture;
+    struct texture *odd_texture;
+} Checker;
 
 // Either:
 // - Diffuse, with vec3 color
@@ -53,6 +64,22 @@ typedef struct material {
     materialTag tag;
 } material;
 
+typedef union textureUnion {
+    Solid solid;
+    Checker checker;
+} textureUnion;
+
+typedef enum textureTag {
+    SOLID,
+    CHECKER,
+} textureTag;
+
+typedef struct texture {
+    textureUnion data;
+    textureTag tag;
+} texture;
+
+
 typedef struct sphere {ray center; double radius; material material;} sphere;
 
 typedef struct bbox {vec3 begin, end;} bbox;
@@ -69,7 +96,7 @@ typedef struct bbox_tree_leaf {
 } bbox_tree_leaf;
 
 typedef union bbox_tree_union {
-    bbox_tree_internal intenal;
+    bbox_tree_internal internal;
     bbox_tree_leaf leaf;
 } bbox_tree_union;
 
@@ -143,7 +170,7 @@ vec3 map_to_time(double time, ray ray) {
     return mapped_point;
 }
 
-typedef struct normal_ray {vec3 sphere_point; vec3 normal; double t; bool outside_face; bool exists; material material;} hit_record;
+typedef struct normal_ray {vec3 sphere_point; vec3 normal; double t; double u; double v; bool outside_face; bool exists; material material;} hit_record;
 
 bbox bound_spheres(sphere *spheres, int length, double t) {
     vec3 min_length = {INFINITY, INFINITY, INFINITY};
@@ -151,9 +178,9 @@ bbox bound_spheres(sphere *spheres, int length, double t) {
         vec3 sphere_pos = map_to_time(t, spheres[i].center);
         if (sphere_pos.x + spheres[i].radius < min_length.x) {
             min_length.x = sphere_pos.x;
-        } else if (sphere_pos.y + spheres[i].radius < min_length.y) {
+        } if (sphere_pos.y + spheres[i].radius < min_length.y) {
             min_length.y = sphere_pos.y;
-        } else if (sphere_pos.z + spheres[i].radius < min_length.z) {
+        } if (sphere_pos.z + spheres[i].radius < min_length.z) {
             min_length.z = sphere_pos.z;
         }
     }
@@ -163,19 +190,27 @@ bbox bound_spheres(sphere *spheres, int length, double t) {
         vec3 sphere_pos = map_to_time(t, spheres[i].center);
         if (sphere_pos.x + spheres[i].radius > max_length.x) {
             max_length.x = sphere_pos.x;
-        } else if (sphere_pos.y + spheres[i].radius > max_length.y) {
+        } if (sphere_pos.y + spheres[i].radius > max_length.y) {
             max_length.y = sphere_pos.y;
-        } else if (sphere_pos.z + spheres[i].radius > max_length.z) {
+        } if (sphere_pos.z + spheres[i].radius > max_length.z) {
             max_length.z = sphere_pos.z;
         }
     }
     return (bbox) {.begin = min_length, .end = max_length};
 }
 
+
+
 typedef struct bbox_pair {
     bbox first;
     bbox second;
 } bbox_pair;
+
+texture *make_solid_tex(vec3 color) {
+    texture *output = malloc(sizeof(texture)); // (texture) {.tag = SOLID, .data = (textureUnion) {.solid = color}}
+    *output = (texture) {.tag = SOLID, .data.solid.color = color};
+    return output;
+}
 
 bbox_pair bbox_x_split(bbox box) {
     return (bbox_pair) {
@@ -198,22 +233,83 @@ bbox_pair bbox_z_split(bbox box) {
     };
 }
 
-bbox_tree beatbox(sphere *spheres, int length, double t) {
+bool sphere_in_box(sphere sph, bbox box, double t);
+
+vec3 solid_value(texture *t, double u, double v, vec3 p) {
+    assert(t->tag == SOLID);
+    Solid solid = t->data.solid;
+    return solid.color;
+}
+
+vec3 (*textureFunctions[])(struct texture *t, double u, double v, vec3 p);
+vec3 checker_value(texture *t, double u, double v, vec3 p) {
+    assert(t->tag == CHECKER);
+    Checker checker = t->data.checker;
+    int x = floor(checker.inv_scale * p.x);
+    int y = floor(checker.inv_scale * p.y);
+    int z = floor(checker.inv_scale * p.z);
+
+    bool isEven = (x + y + z) % 2 == 0;
+    return isEven ? textureFunctions[checker.even_texture->tag](checker.even_texture,u,v,p) : textureFunctions[checker.odd_texture->tag](checker.odd_texture,u,v,p);
+}
+
+vec3 (*textureFunctions[])(struct texture *t, double u, double v, vec3 p) = {
+    [SOLID] = solid_value,
+    [CHECKER] = checker_value
+};
+
+bbox_tree *beatbox(sphere *spheres, int length, bbox bounded_box, double t) {
     double choice = (double) rand()/RAND_MAX;
-    bbox spheres_bound = bound_spheres(spheres, length, t);
     if (length > 2) {
-        // do splitting
+        bbox_pair pair;
+        if (choice <= 0.33) {
+            pair = bbox_x_split(bounded_box);
+        } else if (0.33 < choice && choice <= 0.66) {
+            pair = bbox_y_split(bounded_box);
+        } else {
+            pair = bbox_z_split(bounded_box);
+        }
+        sphere *spheres_1 = malloc(sizeof(sphere) * length);
+        size_t n_spheres_1 = 0;
+        sphere *spheres_2 = malloc(sizeof(sphere) * length);
+        size_t n_spheres_2 = 0;
+        for (size_t i = 0; i < length; i++) {
+            if (sphere_in_box(spheres[i], pair.first, t)) {
+                spheres_1[n_spheres_1++] = spheres[i];
+            } else if (sphere_in_box(spheres[i], pair.second, t)) {
+                spheres_2[n_spheres_2++] = spheres[i];
+            } else {
+                choice = (double)rand() / RAND_MAX;
+                if (choice < 0.5) {
+                    spheres_1[n_spheres_1++] = spheres[i];
+                } else {
+                    spheres_2[n_spheres_2++] = spheres[i];
+                }
+            }
+        }
+        bbox_tree *tree1 = malloc(sizeof(bbox_tree));
+        *tree1 = *beatbox(spheres_1, n_spheres_1, pair.first, t);
+        bbox_tree *tree2 = malloc(sizeof(bbox_tree));
+        *tree2 = *beatbox(spheres_2, n_spheres_2, pair.second, t);
+        bbox_tree *out = malloc(sizeof(bbox_tree));
+        *out = (bbox_tree){.box = bounded_box, .tree.internal = {.child_1 = tree1, .child_2 = tree2}, .is_leaf = false};
+        return out;
     } else {
-        // return a single leaf node with that box
-    }
-    if (choice <= 0.33) {
+        sphere first_sphere = {0};
+        sphere second_sphere = {0};
+        if (length == 1) {
+            first_sphere = spheres[0];
+        } else if (length == 2) {
+            first_sphere = spheres[0];
+            second_sphere = spheres[1];
+        }
 
-    } else if (0.33 < choice && choice <= 0.66) {
-        // y
-    } else {
-        // z
+        bbox_tree_leaf leaf_node = {.sphere_1 = first_sphere, .sphere_2 = second_sphere, .n_spheres = length}; // changed .sphere_2 = spheres[2] to .sphere_2 = second_sphere
+        // return a single leaf node with the 0, 1, or 2 spheres
+        bbox_tree *out = malloc(sizeof(bbox_tree));
+        *out = (bbox_tree){.box = bounded_box, .tree.leaf = leaf_node, .is_leaf = true};
+        return out;
     }
-
 }
 
 
@@ -242,7 +338,6 @@ bool check_overlap(double begin_x, double end_x, double begin_y, double end_y) {
 }
 
 
-
 bool intersect_box(bbox hitbox, ray trace) {
     double begin_x = x_func(hitbox.begin.x, trace);
     double end_x = x_func(hitbox.end.x, trace);
@@ -253,6 +348,17 @@ bool intersect_box(bbox hitbox, ray trace) {
 
     return check_overlap(begin_x, end_x, begin_y, end_y) && (check_overlap(begin_x, end_x, begin_z, end_z) && (check_overlap(begin_z, end_z, begin_y, end_y)
         && check_overlap(0.0,1.0, begin_x, end_x) && check_overlap(0.0,1.0, begin_y, end_y) && check_overlap(0.0,1.0, begin_z, end_z)));
+}
+
+bool boxes_overlap(bbox box1, bbox box2) {
+    return check_overlap(box1.begin.x, box1.end.x, box2.begin.x, box2.end.x)
+    && check_overlap(box1.begin.y, box1.end.y, box2.begin.y, box2.end.y)
+    && check_overlap(box1.begin.z, box1.end.z, box2.begin.z, box2.end.z);
+}
+
+bool sphere_in_box(sphere sph, bbox box, double t) {
+    bbox bounded_sphere = bound_spheres(&sph, 1, t);
+    return boxes_overlap(bounded_sphere, box);
 }
 
 vec3 reflect(vec3 ray_in, vec3 normal) {
@@ -383,7 +489,8 @@ vec3 ray_color(ray trace, int depth, sphere *spheres, int n_spheres) {
             vec3 center_of_reflection = vec_add(normal_from_point.normal, normal_from_point.sphere_point);
             vec3 reflection_offset = vec_add(center_of_reflection, random_sphere_generator());
             ray reflected_ray = {normal_from_point.sphere_point, reflection_offset, .time = trace.time};
-            return vec_mul(normal_from_point.material.data.diffuse.color, ray_color(reflected_ray, depth+1, spheres, n_spheres));
+            Diffuse diffuse_material = normal_from_point.material.data.diffuse;
+            return vec_mul(textureFunctions[diffuse_material.tex->tag](diffuse_material.tex, normal_from_point.u, normal_from_point.v, normal_from_point.sphere_point), ray_color(reflected_ray, depth+1, spheres, n_spheres));
         } else if (normal_from_point.material.tag == METAL) {
             vec3 reflected_ray = vec_add(
                 normalize(
@@ -467,8 +574,22 @@ vec3 pixel_color(int px, int py, int sample_size, sphere *spheres, int n_spheres
 
 
 int main(void) {
+    srand((unsigned int)time(NULL));
     sphere spheres[488];
-    material ground_material = { .tag = DIFFUSE, .data.diffuse = { .color = {0.5, 0.5, 0.5} } };
+    material ground_material = { .tag = DIFFUSE, .data.diffuse = { .tex = &(texture){
+        .tag = CHECKER,
+        .data.checker = {
+            .inv_scale = 1/0.32,
+            .even_texture = &(texture){
+                .tag = SOLID,
+                .data.solid.color = {0.2, 0.3, 0.1}
+            },
+            .odd_texture = &(texture) {
+                .tag = SOLID,
+                .data.solid.color = {0.9, 0.9, 0.9}
+            }
+        }
+    } } };
     spheres[0] = (sphere) { .center = still(0.0, -1000.0, 0.0), .radius = 1000.0, .material = ground_material };
     int index = 1;
     for (int i = -11; i < 11; i++) {
@@ -489,7 +610,7 @@ int main(void) {
                             )
                         },
                         .radius = 0.2,
-                        .material = { .tag = DIFFUSE, .data.diffuse = { .color = color}}
+                        .material = { .tag = DIFFUSE, .data.diffuse = { .tex = make_solid_tex(color)}}
                     };
                 } else if (choose_mat < 0.95) {
                     // metal
@@ -509,8 +630,10 @@ int main(void) {
                         .material = { .tag = DIELECTRIC, .data.dielectric = { .refraction_index = 1.5}}
                     };
                 }
+                index++;
+            } else {
+                g--;
             }
-            index++;
         }
     }
     spheres[485] = (sphere) {
@@ -519,12 +642,19 @@ int main(void) {
     };
     spheres[486] = (sphere) {
         .center = still(-4.0, 1.0, 0.0), .radius = 1.0,
-        .material = { .tag = DIFFUSE, .data.diffuse = { .color = {0.4, 0.2, 0.1} }}
+        .material = { .tag = DIFFUSE, .data.diffuse = { .tex = make_solid_tex((vec3){0.4, 0.2, 0.1}) }}
     };
     spheres[487] = (sphere) {
         .center = still(4.0, 1.0, 0.0), .radius = 1.0,
         .material = { .tag = METAL, .data.metal = { .albedo = {0.7, 0.6, 0.5}, .fuzz = 0.0 } }
     };
+
+
+    bbox_tree *tree = beatbox(
+        spheres, sizeof(spheres)/sizeof(spheres[0]),
+        bound_spheres(spheres, sizeof(spheres)/sizeof(spheres[0]), 0.0),
+        0.0
+    );
 
     FILE *fptr = fopen("blah.ppm", "w");
     if (!fptr) {
